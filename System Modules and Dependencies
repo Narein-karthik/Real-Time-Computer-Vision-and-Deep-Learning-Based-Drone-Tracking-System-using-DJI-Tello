@@ -1,0 +1,204 @@
+# 📦 System Modules and Dependencies 
+
+This document describes the purpose and role of each **module, library, and component** used in the project:
+**Real-Time Computer Vision and Deep Learning Based Drone Tracking System using DJI Tello**
+
+---
+
+## 🧠 Core Programming Environment
+
+### Python
+
+* Primary programming language for system integration
+* Handles AI logic, control logic, threading, and system orchestration
+
+---
+
+## 🚁 Drone Control Module
+
+### djitellopy
+
+**Purpose:**
+
+* Communication interface between the AI system and DJI Tello drone
+* Sends flight commands (takeoff, land, movement, rotation)
+* Receives live video stream from drone camera
+
+**Role in System:**
+
+* Acts as the control bridge between software intelligence and physical drone
+
+---
+
+## 👁️ Computer Vision Modules
+
+### opencv-python (OpenCV)
+
+**Purpose:**
+
+* Real-time video processing
+* Frame resizing, color conversion, filtering
+* Visualization (bounding boxes, overlays, UI)
+
+**Role in System:**
+
+* Core vision processing layer
+
+---
+
+## 🧠 Deep Learning Modules
+
+### ultralytics (YOLOv8)
+
+**Purpose:**
+
+* Real-time object and face detection
+* Target tracking
+* Deep learning inference pipeline
+
+**Role in System:**
+
+* AI perception engine for autonomous tracking
+
+---
+
+### torch (PyTorch)
+
+**Purpose:**
+
+* GPU acceleration (CUDA)
+* Deep learning inference for YOLOv8
+
+**Role in System:**
+
+* High-performance AI computation layer
+
+---
+
+### tensorflow
+
+**Purpose:**
+
+* Deep learning framework for gesture recognition model
+* Loads and runs trained `.h5` gesture model
+
+**Role in System:**
+
+* Gesture intelligence engine
+
+---
+
+## ✋ Human–Drone Interaction Modules
+
+### mediapipe
+
+**Purpose:**
+
+* Real-time hand landmark detection
+* Feature extraction for gesture recognition
+
+**Role in System:**
+
+* Human–computer interaction perception layer
+
+---
+
+## 🔢 Data Processing Modules
+
+### numpy
+
+**Purpose:**
+
+* Numerical computations
+* Vector and matrix operations
+* Data normalization and preprocessing
+
+**Role in System:**
+
+* Mathematical processing backbone
+
+---
+
+## 🎮 Interaction & Control Modules
+
+### keyboard
+
+**Purpose:**
+
+* Manual keyboard input
+* Emergency override control
+* Manual navigation commands
+
+**Role in System:**
+
+* Human safety and manual interaction layer
+
+---
+
+## 🧩 System Architecture Mapping
+
+| Layer              | Components                        |
+| ------------------ | --------------------------------- |
+| Perception Layer   | OpenCV, YOLOv8, MediaPipe         |
+| Intelligence Layer | PyTorch, TensorFlow               |
+| Control Layer      | djitellopy                        |
+| Interaction Layer  | Gesture Control, Keyboard Control |
+| Acceleration Layer | CUDA (PyTorch)                    |
+| Integration Layer  | Python                            |
+
+---
+
+## 🔁 Data Flow Summary
+
+1. DJI Tello captures video
+2. djitellopy streams video to system
+3. OpenCV processes frames
+4. YOLOv8 performs detection/tracking
+5. MediaPipe extracts hand landmarks
+6. TensorFlow model classifies gestures
+7. Control logic generates commands
+8. djitellopy sends commands to drone
+9. Drone executes movement
+10. Feedback loop continues
+
+---
+
+## 🏗️ Engineering Design Philosophy
+
+* Modular architecture
+* Separation of perception, intelligence, and control
+* Real-time processing pipeline
+* Scalable system design
+* Multi-mode operation
+* Safety-first control logic
+* Human-in-the-loop design
+* Autonomous + manual hybrid control
+
+---
+
+## 🎓 Academic Perspective
+
+This system integrates:
+
+* Computer Vision
+* Deep Learning
+* Robotics
+* Control Systems
+* Human–Computer Interaction
+* Embedded AI
+* Autonomous Systems
+* Real-time Systems
+
+---
+
+## 🏆 Summary
+
+This project is designed as a **full-stack AI robotics system**, combining:
+
+* Perception (vision)
+* Intelligence (deep learning)
+* Decision making (control logic)
+* Action (drone movement)
+* Interaction (human control)
+
+It represents a complete **AI-driven autonomous system architecture**, not just a software application.
