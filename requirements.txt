@@ -1,0 +1,8 @@
+djitellopy
+opencv-python
+ultralytics 
+torch 
+tensorflow
+mediapipe
+numpy
+keyboard
