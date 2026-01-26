@@ -1,0 +1,419 @@
+import os
+import tensorflow as tf
+import numpy as np
+from tensorflow.keras.models import load_model
+import mediapipe as mp
+import cv2
+import threading
+import copy
+import time
+import djitellopy
+from queue import Queue
+
+
+class events:
+    got_image = threading.Event()
+    is_running = threading.Event()
+    got_lms = threading.Event()
+
+
+class VideoCaptureThread(threading.Thread):
+    def __init__(
+            self,
+            video_source,
+            tello_drone=None,
+            height=720,
+            width=960,
+            command_thresholds=None,
+    ):
+        super(VideoCaptureThread, self).__init__()
+
+        if command_thresholds is None:
+            command_thresholds = {
+                'up': 0, 'down': 0, 'left': 0, 'right': 0,
+                'forward': 0, 'backward': 0,
+                'land': 0, 'NaN': 0
+            }
+        self.video_source = video_source
+        self.height = height
+        self.width = width
+        self.tello_drone = tello_drone
+
+        # ---- Source selection: Tello camera or normal webcam ----
+        if self.video_source == 'tello' and self.tello_drone is not None:
+            self.cap = None
+            self.frame_read = self.tello_drone.get_frame_read()
+            self.frame = None
+            self.running = True
+        else:
+            self.cap = cv2.VideoCapture(video_source)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+            self.frame = None
+            self.running = True
+
+        self.mpDraw = mp.solutions.drawing_utils
+        self.lm_obj = None
+        self.lm_present = False
+        self.mpHands = mp.solutions.hands
+        self.labels = 'NaN'
+        self.font = cv2.FONT_HERSHEY_COMPLEX_SMALL
+        self.landmark_queue = Queue(20)
+
+        self.command_handler = CommandHandler(
+            self,
+            tello_drone=tello_drone
+        )
+        self.command_handler.start()
+        self.drone_label = 'IDLE'
+
+        self.gesture_detection_thread = GestureDetectionThread(self, self.command_handler)
+        self.gesture_detection_thread.start()
+
+        self.artist = Artist(self, self.gesture_detection_thread)
+        self.artist.start()
+
+        # ---- Video Recording Setup ----
+        os.makedirs("TELLOGESTURE", exist_ok=True)
+
+        fourcc_mp4 = cv2.VideoWriter_fourcc(*"mp4v")
+        filename_mp4 = os.path.join("TELLOGESTURE", time.strftime("record_%Y%m%d_%H%M%S.mp4"))
+        self.video_writer = cv2.VideoWriter(filename_mp4, fourcc_mp4, 30.0, (self.width, self.height))
+
+        if not self.video_writer.isOpened():
+            print("WARNING: mp4 writer failed, falling back to AVI (MJPG codec).")
+            fourcc_avi = cv2.VideoWriter_fourcc(*"MJPG")
+            filename_avi = os.path.join("TELLOGESTURE", time.strftime("record_%Y%m%d_%H%M%S.avi"))
+            self.video_writer = cv2.VideoWriter(filename_avi, fourcc_avi, 30.0, (self.width, self.height))
+            if not self.video_writer.isOpened():
+                self.video_writer = None
+        else:
+            print(f"Recording video to: {filename_mp4}")
+
+        self.start()
+
+    def run(self):
+        # First frame
+        if self.cap is None:
+            self.frame = self.frame_read.frame
+            self.frame = cv2.cvtColor(self.frame, cv2.COLOR_RGB2BGR)
+            self.frame = cv2.resize(self.frame, (self.width, self.height))
+            self.running = True
+        else:
+            self.running, self.frame = self.cap.read()
+
+        while self.running:
+            events.got_image.set()
+
+            # Draw landmarks if present
+            if self.lm_present:
+                if not self.landmark_queue.empty():
+                    self.lm_obj = self.landmark_queue.get()
+                if self.lm_obj:
+                    self.frame = cv2.flip(self.frame, 1)
+                    self.mpDraw.draw_landmarks(self.frame, self.lm_obj, self.mpHands.HAND_CONNECTIONS)
+                    self.frame = cv2.flip(self.frame, 1)
+            else:
+                self.labels = 'NaN'
+
+            cv2.putText(self.frame, f'Prediction   : {self.labels}', (10, self.height - 20),
+                        self.font, 1, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(self.frame, f'Drone Status : {self.drone_label}', (10, self.height - 40),
+                        self.font, 1, (255, 255, 255), 1, cv2.LINE_AA)
+
+            if self.video_writer is not None:
+                self.video_writer.write(self.frame)
+
+            cv2.imshow("Original Frame", self.frame)
+
+            key = cv2.waitKey(1) & 0xFF
+
+            # Quit
+            if key == ord('q'):
+                self.stop()
+                break
+
+            # Manual TAKEOFF
+            if key == ord('t'):
+                if self.tello_drone is not None:
+                    print("Takeoff triggered by keyboard (T)")
+                    self.tello_drone.takeoff()
+                    self.put_drone_label("TAKEOFF")
+
+            # Manual LAND
+            if key == ord('l'):
+                if self.tello_drone is not None:
+                    print("Landing triggered by keyboard (L)")
+                    self.tello_drone.send_rc_control(0, 0, 0, 0)
+                    self.tello_drone.land()
+                    self.put_drone_label("LANDING")
+
+            # Next frame
+            if self.cap is None:
+                self.frame = self.frame_read.frame
+                self.frame = cv2.cvtColor(self.frame, cv2.COLOR_RGB2BGR)
+                self.frame = cv2.resize(self.frame, (self.width, self.height))
+            else:
+                self.running, self.frame = self.cap.read()
+
+        self.stop()
+
+    def stop(self):
+        self.running = False
+        events.is_running.set()
+
+        if self.cap is not None:
+            self.cap.release()
+
+        if hasattr(self, "video_writer") and self.video_writer is not None:
+            self.video_writer.release()
+            print("Video recording saved.")
+
+        if self.tello_drone is not None:
+            try:
+                self.tello_drone.streamoff()
+            except Exception:
+                pass
+
+        cv2.destroyAllWindows()
+
+        self.artist.end()
+        self.command_handler.end()
+        self.gesture_detection_thread.end()
+
+        self.artist.join()
+        self.command_handler.join()
+        self.gesture_detection_thread.join()
+
+    def put_drone_label(self, label):
+        self.drone_label = label
+
+    def put_detection_label(self, label):
+        self.labels = label
+
+    def put_landmarks(self, lm_obj=None, NaN=False):
+        if NaN:
+            self.lm_present = False
+        else:
+            self.landmark_queue.put(copy.copy(lm_obj))
+            self.lm_present = True
+
+
+class GestureDetectionThread(threading.Thread):
+
+    def __init__(self, video_capture, command_handler):
+        super(GestureDetectionThread, self).__init__()
+        self.frame = None
+        self.class_names = np.array(
+            ['backward', 'down', 'forward', 'land', 'left', 'right', 'up'],  # ❌ flip removed
+            dtype=object
+        )
+
+        self.model = load_model('Model_5_120e.h5')
+
+        self.lm_obj = None
+        self.video_capture = video_capture
+        self.direction = 'NaN'
+        self.running = True
+
+        self.NaN_threshold = 4
+        self.cur_NaN_threshold = self.NaN_threshold
+
+        self.command_handler = command_handler
+
+    def run(self):
+        while self.running:
+            events.got_lms.wait()
+            if not self.running:
+                break
+            self.hand_detection()
+
+    def end(self):
+        self.running = False
+        events.got_lms.set()
+
+    def hand_detection(self):
+        landmarks = self.lm_obj.landmark
+        base_x = landmarks[0].x
+        base_y = landmarks[0].y
+
+        coords = []
+        for lm in landmarks:
+            coords.append(lm.x - base_x)
+            coords.append(lm.y - base_y)
+
+        flat = np.array(coords, dtype=np.float32).reshape(1, 42)
+        max_value = np.max(np.abs(flat))
+        if max_value > 0:
+            flat = flat / max_value
+
+        prediction = self.model.predict(flat, verbose=0)
+        predicted_idx = int(np.argmax(prediction))
+
+        self.direction = self.class_names[predicted_idx]
+
+        self.video_capture.put_detection_label(self.direction)
+        self.command_handler.send_commands(self.direction)
+
+        events.got_lms.clear()
+
+    def predict_labels(self, lm_obj):
+        if lm_obj is None:
+            self.command_handler.send_commands('NaN')
+            if self.cur_NaN_threshold <= 0:
+                self.video_capture.put_landmarks(NaN=True)
+                self.video_capture.put_detection_label('NaN')
+            else:
+                self.cur_NaN_threshold -= 1
+        else:
+            self.cur_NaN_threshold = self.NaN_threshold
+            self.lm_obj = copy.copy(lm_obj)
+            events.got_lms.set()
+
+
+class Artist(threading.Thread):
+    def __init__(self, video_capture, detector):
+        super(Artist, self).__init__()
+        self.video_capture = video_capture
+        self.detector = detector
+        self.frame = None
+        self.mpHands = mp.solutions.hands
+        self.hands = self.mpHands.Hands(max_num_hands=1, min_detection_confidence=0.7)
+        self.mpDraw = mp.solutions.drawing_utils
+        self.running = True
+
+    def run(self):
+        while True:
+            events.got_image.wait()
+            if not self.running:
+                break
+            if self.video_capture.frame is None:
+                events.got_image.clear()
+                continue
+            self.frame = self.video_capture.frame.copy()
+            self.runnable()
+
+    def runnable(self):
+        self.frame = cv2.flip(self.frame, 1)
+        self.frame = cv2.cvtColor(self.frame, cv2.COLOR_BGR2RGB)
+
+        result = self.hands.process(self.frame)
+
+        if result.multi_hand_landmarks:
+            for handslms in result.multi_hand_landmarks:
+                self.detector.predict_labels(handslms)
+                self.video_capture.put_landmarks(handslms)
+        else:
+            self.detector.predict_labels(None)
+
+        events.got_image.clear()
+
+    def end(self):
+        self.running = False
+        events.got_image.set()
+
+
+class CommandHandler(threading.Thread):
+    def __init__(self, video_capture, tello_drone=None):
+        super(CommandHandler, self).__init__()
+
+        self.video_capture = video_capture
+        self.tello_drone = tello_drone
+        self.command_queue = Queue(maxsize=20)
+        self.got_command = threading.Event()
+        self.running = True
+
+        self.last_command = 'None'
+
+    def send_commands(self, command):
+        if not self.running:
+            return
+        try:
+            self.command_queue.put_nowait(command)
+            self.got_command.set()
+        except:
+            pass
+
+    def end(self):
+        self.running = False
+        self.got_command.set()
+
+    def run(self):
+        while self.running:
+            self.got_command.wait()
+            if not self.running:
+                break
+
+            while not self.command_queue.empty():
+                cmd = self.command_queue.get()
+                self._execute_command(cmd)
+
+            self.got_command.clear()
+
+    def _execute_command(self, cmd):
+        if self.tello_drone is None:
+            return
+
+        if cmd == self.last_command and cmd not in ['NaN']:
+            return
+        self.last_command = cmd
+
+        if cmd == 'NaN':
+            self.video_capture.put_drone_label('IDLE')
+            self.tello_drone.send_rc_control(0, 0, 0, 0)
+
+        elif cmd == 'up':
+            self.video_capture.put_drone_label('UP')
+            self.tello_drone.send_rc_control(0, 0, -20, 0)
+
+        elif cmd == 'down':
+            self.video_capture.put_drone_label('DOWN')
+            self.tello_drone.send_rc_control(0, 0, 20, 0)
+
+        elif cmd == 'left':
+            self.video_capture.put_drone_label('LEFT')
+            self.tello_drone.send_rc_control(-20, 0, 0, 0)
+
+        elif cmd == 'right':
+            self.video_capture.put_drone_label('RIGHT')
+            self.tello_drone.send_rc_control(20, 0, 0, 0)
+
+        elif cmd == 'forward':
+            self.video_capture.put_drone_label('FORWARD')
+            self.tello_drone.send_rc_control(0, -20, 0, 0)
+
+        elif cmd == 'backward':
+            self.video_capture.put_drone_label('BACKWARD')
+            self.tello_drone.send_rc_control(0, 20, 0, 0)
+
+        elif cmd == 'land':
+            self.video_capture.put_drone_label('LANDING')
+            self.tello_drone.send_rc_control(0, 0, 0, 0)
+            self.tello_drone.land()
+
+
+class main:
+    def __init__(self):
+        print('Waiting for Tello')
+        self.tello = djitellopy.Tello()
+        self.tello.connect()
+        time.sleep(2)
+        print('Tello connected')
+
+        self.tello.streamon()
+        time.sleep(2)
+
+        self.video_capture = VideoCaptureThread(
+            video_source='tello',
+            tello_drone=self.tello,
+            height=720,
+            width=960,
+        )
+
+        events.is_running.wait()
+        self.video_capture.join()
+        print('Done')
+
+
+if __name__ == "__main__":
+    main()
