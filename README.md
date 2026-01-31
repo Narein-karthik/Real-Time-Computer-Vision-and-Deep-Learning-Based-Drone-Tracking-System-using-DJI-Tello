@@ -177,7 +177,10 @@ This project demonstrates practical integration of:
 ##  Author
 
 **Narein Karthik E**
-AI & ML Student
+**Nithin P**
+**Dhanush M**
+**Cheathana G M**
+AI & ML Students
 Focus Areas: Artificial Intelligence, Robotics, Computer Vision, Autonomous Systems
 
 ---
